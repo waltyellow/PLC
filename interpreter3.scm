@@ -7,14 +7,14 @@
 ;takes a file and run the call tree generated from it
 (define interpret
   (lambda (file)
-    (run (parser file) newenvironment stdreturn stdreturn)))
+    (run (parser file) newenvironment stdreturn stdreturn stdreturn)))
 
 ;returns a state that is modified by the call tree
 ;IN: queue is the list of statement, state is the state to operate on, 
 ;return is the function that takes our output state, when return is called 
 ;break is the function that takes output state when break is called
 (define run
-  (lambda (queue state return break)
+  (lambda (queue state return break continue)
     ;if the tree is empty
     (if (null? queue)
         ;then returns the result
@@ -22,28 +22,24 @@
         ;else we have different cases
         (cond
           ;if the first statement of the tree is null, then skip it, and execute the rest
-          ((null? (car queue)) (run (cdr queue) state return break))
-          ;if the first statement of the tree is a continue, return what we have now to return function
-          ((eq? (caar queue) 'continue) (return state))
-          ;if the first statement of the tree is a break, send the current state to break function
-          ((eq? (caar queue) 'break) (break state))
+          ((null? (car queue)) (run (cdr queue) state return break continue))
           ;else, let Mstate execute the current function. 
-          ((eq? (caar queue) 'if) (run (cons (if_replace (car queue) state) (cdr queue)) state return break))
-          (else (Mstate-cps (car queue) state (lambda (v) (run (cdr queue) v return break)) break))))))
+          ;((eq? (caar queue) 'if) (run (cons (if_replace (car queue) state) (cdr queue)) state return break continue))
+          (else (Mstate-cps (car queue) state (lambda (v) (run (cdr queue) v return break continue)) break continue))))))
 
-(define if_replace
-  (lambda (statement state)
-    (if (Mboolean (condstmt statement) state)
-        (thenstmt statement)
-        (if (null? (cdddr statement))
-            '()
-            (elsestmt statement)))))
+;(define if_replace
+;  (lambda (statement state)
+;    (if (Mboolean (condstmt statement) state)
+;        (thenstmt statement)
+;        (if (null? (cdddr statement))
+;            '()
+;            (elsestmt statement)))))
   
 (define stdreturn
   (lambda (v) v))
 
 (define Mstate-cps
-  (lambda (statement state return break)
+  (lambda (statement state return break continue)
     (cond
       ;if the statement is empty, do nothing
       ((null? statement) (return state))
@@ -54,30 +50,49 @@
       ;if it starts with "return", we retrive the boolean or numerical value of the next item, the expression
       ((eq? 'return (operator statement)) (return (M_return statement state)))
       ;if it is an if statement
-      ((eq? 'if (operator statement)) (Mstate_if-cps statement state return break ))
+      ((eq? 'if (operator statement)) (Mstate_if-cps statement state return break continue))
       ;if it is a while loop
       ((eq? 'while (operator statement)) (M_while statement state return ))
       ;if we see a begin, then (cdr statement) is a tree
-      ((eq? 'begin (operator statement)) (M_block_begin statement state return break ))
-      ((eq? 'continue (operator statement)) (return state))
+      ((eq? 'begin (operator statement)) (M_block_begin statement state return break continue))
+      ((eq? 'continue (operator statement)) (continue state))
       ((eq? 'break (operator statement))  (break state))
       (else (error 'statement_not_recognized)))))
 
+;takes a block-begin-end statement and run it
+;returns the state in cps style
 (define M_block_begin
-  (lambda (statement state return break )
-    (run (cdr statement) (enter_block state) (lambda (result) (exit_block result return)) (lambda (snapshot) (exit_block snapshot break)) )))
+  (lambda (statement state return break continue)
+    (run 
+     (cdr statement) 
+     (enter_block state) 
+     (lambda (result) (exit_block result return)) 
+     (lambda (snapshot) (exit_block snapshot break)) 
+     (lambda (snapshot) (exit_block snapshot continue))
+     )))
 
+;experimental implementation
 (define M_while
-  (lambda (statement state return )
-      (return (call/cc
+  (lambda (statement state return)
+         (M_while_loop statement state return return)))
+
+;(define M_while
+  ;(lambda (statement state return)
+      ;(return (call/cc
        ;return here at any time we sees break, no more while execution
-       (lambda (break)
-         (M_while_loop statement state return break ))))))           
+       ;(lambda (break)
+         ;(M_while_loop statement state return break )))))) 
         
 (define M_while_loop
-  (lambda (statement state return break )
+  (lambda (statement state return break)
     (if (Mboolean (condstmt statement) state)
-        (Mstate-cps (thenstmt statement) state (lambda (result_state) (M_while_loop statement result_state return break )) break )
+        (Mstate-cps 
+         (thenstmt statement)
+         state 
+         (lambda (result_state) (M_while_loop statement result_state return break )) 
+         break 
+         (lambda (continue_state) (M_while_loop statement continue_state return break)))
+        ;else
         (break state))))
 
 (define M_return
@@ -95,16 +110,16 @@
   ;  (Mstate_if-cps statement state stdreturn)))
   
 (define Mstate_if-cps
-  (lambda (statement state return break )
+  (lambda (statement state return break continue)
     ; if it is true
     (if (Mboolean (condstmt statement) state)
         ;do this as then
-        (Mstate-cps (thenstmt statement) state return break )
+        (Mstate-cps (thenstmt statement) state return break continue)
         ;if it falls to else
         (if (null? (cdddr statement))
             (return state)  ;<-else does not exist, do nothing
             ;if else does exist as below-
-            (Mstate-cps (elsestmt statement) state return break)))))
+            (Mstate-cps (elsestmt statement) state return break continue)))))
 
 (define condstmt cadr)
 (define thenstmt caddr)
